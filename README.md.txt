@@ -1,4 +1,4 @@
-# MSc Thesis – Gestational Diabetes ML
+# MSc Thesis â€“ Gestational Diabetes ML
 
 **Title:** Impact of Data Splitting on Performance of Machine Learning Algorithms for Predicting Gestational Diabetes
 
@@ -6,9 +6,9 @@ This repository contains the full reproducible R pipeline for my MSc thesis.
 
 ## Structure
 
-- `/scripts` – Full R analysis
-- `/data` – Original dataset (DATA.xlsx)
-- `/outputs` – Automatically generated datasets and results
+- `/scripts` â€“ Full R analysis
+- `/data` â€“ Original dataset (DATA.xlsx)
+- `/outputs` â€“ Automatically generated datasets and results
 
 ## How to run
 
@@ -17,24 +17,20 @@ In RStudio:
 ```r
 source("scripts/thesis_analysis.R")
 
-Models used
-
-:
+Models used:
 
 -Logistic Regression
 
-
 -Random Forest
+
 -Support Vector Machines (SVM)
 
-
 -K-Nearest Neighbors (KNN)
--
 
-Naive Bayes
-
+-NaÃ¯ve Bayes
 
 -XGBoost
+
 
 
 
