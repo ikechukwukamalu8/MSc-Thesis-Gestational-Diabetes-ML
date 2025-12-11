@@ -8,7 +8,6 @@ This repository contains the full reproducible R pipeline for my MSc thesis.
 
 - thesis_analysis.R.txt – Full R analysis
 - DATA.xlsx – Original dataset
-- `/outputs` – Automatically generated datasets and results
 
 ## How to run
 
@@ -35,4 +34,5 @@ Models used:
 
 
 Author: Ikechukwu Okechi Kamalu
+
 
