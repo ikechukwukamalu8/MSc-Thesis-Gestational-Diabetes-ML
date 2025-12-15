@@ -1,52 +1,24 @@
 # ==============================================================================
-# MSc Thesis: Impact of Data Splitting on ML Performance
-# Script: Data Preprocessing
+# MSc Thesis: Impact of Data Splitting on Machine Learning Performance
 # Author: Ikechukwu Okechi Kamalu
+# Institution: Near East University
 # ==============================================================================
+# This script performs:
+# 1) Data preprocessing
+# 2) Multiple imputation (predictors only)
+# 3) Model training under multiple data splits
+# 4) Performance evaluation using ROC–AUC
+# 5) ROC visualisation
+# ==============================================================================
+
+
+# ------------------------------------------------------------------------------
+# 0. SETUP
+# ------------------------------------------------------------------------------
+
 library(tidyverse)
 library(readxl)
-
-# Load dataset
-DATA <- read_excel("dataCBGS_dataset.xlsx")
-
-# Basic preprocessing
-DATA <- DATA %>%
-  select(-Dummy_Study_Number) %>%
-  mutate(
-    Gestational_diabetes = factor(Gestational_diabetes, levels = c("No", "Yes")),
-    sex_of_the_baby = factor(sex_of_the_baby),
-    across(where(is.character), as.factor)
-  )
-
-# Save cleaned data
-saveRDS(DATA, "data/clean_data.rds")
-
-# ==============================================================================
-# Script: Multiple Imputation using MICE
-# ==============================================================================
-
 library(mice)
-
-DATA <- readRDS("data/clean_data.rds")
-
-set.seed(123)
-imputation_model <- mice(
-  DATA,
-  m = 5,
-  method = "pmm",
-  maxit = 30,
-  seed = 123
-)
-
-# Extract completed dataset
-DATA_COMPLETE <- complete(imputation_model)
-
-saveRDS(DATA_COMPLETE, "data/imputed_data.rds")
-
-# ==============================================================================
-# Script: Model Training and Evaluation under Different Data Splits
-# ==============================================================================
-
 library(caret)
 library(pROC)
 library(ROSE)
@@ -55,26 +27,100 @@ library(e1071)
 library(naivebayes)
 library(glmnet)
 library(xgboost)
+library(ggplot2)
+
+set.seed(123)
+
+# Create directories if they do not exist
+dir.create("data", showWarnings = FALSE)
+dir.create("results", showWarnings = FALSE)
+
+
+# ------------------------------------------------------------------------------
+# 1. DATA LOADING AND PREPROCESSING
+# ------------------------------------------------------------------------------
+
+DATA_RAW <- read_excel("dataCBGS_dataset.xlsx")
+
+DATA <- DATA_RAW %>%
+  select(-Dummy_Study_Number) %>%
+  mutate(
+    Gestational_diabetes = factor(
+      Gestational_diabetes,
+      levels = c("No", "Yes")  # Ensure correct reference & positive class
+    ),
+    across(where(is.character), as.factor)
+  )
+
+saveRDS(DATA, "data/clean_data.rds")
+
+
+# ------------------------------------------------------------------------------
+# 2. MULTIPLE IMPUTATION (PREDICTORS ONLY)
+# ------------------------------------------------------------------------------
+
+DATA <- readRDS("data/clean_data.rds")
+
+# Separate outcome
+outcome <- DATA$Gestational_diabetes
+predictors <- DATA %>% select(-Gestational_diabetes)
+
+# Perform MICE on predictors only (best practice)
+imputation_model <- mice(
+  predictors,
+  m = 5,
+  method = "pmm",
+  maxit = 30,
+  seed = 123,
+  printFlag = FALSE
+)
+
+predictors_complete <- complete(imputation_model)
+
+# Recombine outcome
+DATA_COMPLETE <- bind_cols(
+  predictors_complete,
+  Gestational_diabetes = outcome
+)
+
+saveRDS(DATA_COMPLETE, "data/imputed_data.rds")
+
+
+# ------------------------------------------------------------------------------
+# 3. MODEL TRAINING & EVALUATION FUNCTION
+# ------------------------------------------------------------------------------
 
 DATA <- readRDS("data/imputed_data.rds")
 
-splits <- c(0.66, 0.70, 0.75, 0.80)
+split_ratios <- c(0.66, 0.70, 0.75, 0.80)
 
+# NOTE:
+# We intentionally use method = "none" because the research question
+# concerns the effect of data splitting, not hyperparameter tuning.
 train_ctrl <- trainControl(
   method = "none",
   classProbs = TRUE,
   summaryFunction = twoClassSummary
 )
 
-evaluate_model <- function(method, split_ratio) {
+evaluate_model <- function(method, split_ratio, data) {
 
   set.seed(123)
-  idx <- createDataPartition(DATA$Gestational_diabetes, p = split_ratio, list = FALSE)
-  train_data <- DATA[idx, ]
-  test_data  <- DATA[-idx, ]
+  idx <- createDataPartition(
+    data$Gestational_diabetes,
+    p = split_ratio,
+    list = FALSE
+  )
 
-  # Balance training data ONLY
-  train_bal <- ROSE(Gestational_diabetes ~ ., data = train_data)$data
+  train_data <- data[idx, ]
+  test_data  <- data[-idx, ]
+
+  # Balance ONLY training data (no leakage)
+  train_bal <- ROSE(
+    Gestational_diabetes ~ .,
+    data = train_data,
+    seed = 123
+  )$data
 
   model_fit <- train(
     Gestational_diabetes ~ .,
@@ -84,65 +130,102 @@ evaluate_model <- function(method, split_ratio) {
     trControl = train_ctrl
   )
 
-  probs <- predict(model_fit, test_data, type = "prob")[,"Yes"]
-  roc_obj <- roc(test_data$Gestational_diabetes, probs)
+  probs <- predict(model_fit, test_data, type = "prob")[, "Yes"]
 
-  return(list(AUC = auc(roc_obj), ROC = roc_obj))
+  roc_obj <- roc(
+    response = test_data$Gestational_diabetes,
+    predictor = probs,
+    levels = c("No", "Yes"),
+    direction = "<"
+  )
+
+  list(
+    AUC = as.numeric(auc(roc_obj)),
+    ROC = roc_obj
+  )
 }
 
+
+# ------------------------------------------------------------------------------
+# 4. RUN EXPERIMENTS ACROSS MODELS AND SPLITS
+# ------------------------------------------------------------------------------
+
 models <- c(
-  Logistic = "glmnet",
-  SVM = "svmRadial",
-  RandomForest = "rf",
-  NaiveBayes = "naive_bayes",
-  KNN = "knn",
-  XGBoost = "xgbTree"
+  Logistic      = "glmnet",
+  SVM           = "svmRadial",
+  RandomForest  = "rf",
+  NaiveBayes    = "naive_bayes",
+  KNN           = "knn",
+  XGBoost       = "xgbTree"
 )
 
 results <- list()
 
 for (m in names(models)) {
-  for (s in splits) {
-    key <- paste(m, s, sep = "_")
-    results[[key]] <- evaluate_model(models[m], s)
+  for (s in split_ratios) {
+
+    key <- paste(m, paste0(s * 100, "_", (1 - s) * 100), sep = "_")
+
+    results[[key]] <- evaluate_model(
+      method = models[m],
+      split_ratio = s,
+      data = DATA
+    )
   }
 }
 
 saveRDS(results, "results/model_results.rds")
 
-# ==============================================================================
-# Script: Results Summary and ROC Visualization
-# ==============================================================================
 
-library(tidyverse)
-library(pROC)
-library(ggplot2)
+# ------------------------------------------------------------------------------
+# 5. RESULTS SUMMARY
+# ------------------------------------------------------------------------------
 
 results <- readRDS("results/model_results.rds")
 
 auc_table <- tibble(
   Model_Split = names(results),
-  AUC = sapply(results, function(x) as.numeric(x$AUC))
+  AUC = sapply(results, function(x) x$AUC)
 )
 
 write.csv(auc_table, "results/auc_results.csv", row.names = FALSE)
 
+
+# ------------------------------------------------------------------------------
+# 6. ROC CURVE VISUALISATION
+# ------------------------------------------------------------------------------
+
 roc_df <- bind_rows(lapply(names(results), function(k) {
   r <- results[[k]]$ROC
-  data.frame(
+  tibble(
     FPR = 1 - r$specificities,
     TPR = r$sensitivities,
     Model = k
   )
 }))
 
-p <- ggplot(roc_df, aes(FPR, TPR, color = Model)) +
-  geom_line(size = 1) +
-  geom_abline(linetype = "dashed") +
+roc_plot <- ggplot(roc_df, aes(FPR, TPR, color = Model)) +
+  geom_line(linewidth = 1) +
+  geom_abline(linetype = "dashed", colour = "grey40") +
   theme_minimal() +
-  labs(title = "ROC Curves Across Models and Data Splits")
+  labs(
+    title = "ROC Curves Across Machine Learning Models and Data Splits",
+    x = "False Positive Rate",
+    y = "True Positive Rate"
+  ) +
+  theme(legend.position = "right")
 
-ggsave("results/roc_curves.png", plot = p, width = 10, height = 7)
+ggsave(
+  filename = "results/roc_curves.png",
+  plot = roc_plot,
+  width = 10,
+  height = 7,
+  dpi = 300
+)
+
+
+# ------------------------------------------------------------------------------
+# 7. SESSION INFO (REPRODUCIBILITY)
+# ------------------------------------------------------------------------------
 
 sessionInfo()
-
