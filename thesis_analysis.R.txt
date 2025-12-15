@@ -1,881 +1,148 @@
-﻿install.packages("caret")
-install.packages("e1071")
-install.packages("klaR")
-install.packages("rpart")
-install.packages("ROCR")
-install.packages("mice")
-
-# Load necessary packages
-library(readxl)
+# ==============================================================================
+# MSc Thesis: Impact of Data Splitting on ML Performance
+# Script: Data Preprocessing
+# Author: Ikechukwu Okechi Kamalu
+# ==============================================================================
 library(tidyverse)
-library(caret)
-library(e1071)
-library(neuralnet)
-library(klaR)
-library(rpart)
-library(ROCR)
+library(readxl)
+
+# Load dataset
+DATA <- read_excel("dataCBGS_dataset.xlsx")
+
+# Basic preprocessing
+DATA <- DATA %>%
+  select(-Dummy_Study_Number) %>%
+  mutate(
+    Gestational_diabetes = factor(Gestational_diabetes, levels = c("No", "Yes")),
+    sex_of_the_baby = factor(sex_of_the_baby),
+    across(where(is.character), as.factor)
+  )
+
+# Save cleaned data
+saveRDS(DATA, "data/clean_data.rds")
+
+# ==============================================================================
+# Script: Multiple Imputation using MICE
+# ==============================================================================
+
 library(mice)
-library(writexl)
-library(readr)
-library(stringr)
+
+DATA <- readRDS("data/clean_data.rds")
+
+set.seed(123)
+imputation_model <- mice(
+  DATA,
+  m = 5,
+  method = "pmm",
+  maxit = 30,
+  seed = 123
+)
+
+# Extract completed dataset
+DATA_COMPLETE <- complete(imputation_model)
+
+saveRDS(DATA_COMPLETE, "data/imputed_data.rds")
+
+# ==============================================================================
+# Script: Model Training and Evaluation under Different Data Splits
+# ==============================================================================
+
+library(caret)
+library(pROC)
+library(ROSE)
 library(randomForest)
 library(e1071)
 library(naivebayes)
 library(glmnet)
-library(pROC)
+library(xgboost)
 
-# Rename columns
-colnames(DATA) <- c(
-  "Dummy_Study_Number", "Evidence_of_maternal_anaemia", "Do_we_have_data_related_to_multiple_micronutrient_supplementation", 
-  "Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy", "Relative_to_the_start_of_pregnancy_when_did_multiple_micronutrient_supplementation_start",
-  "Relative_to_the_start_of_pregnancy_when_did_multiple_micronutrient_supplementation_stop", "Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else",
-  "For_how_many_weeks_were_multiple_micronutrients_taken", "sex_of_the_baby", "Gestational_diabetes", "Gestational_hypertension",
-  "Evidence_of_pre_eclampsia", "Premature_birth", "Low_birth_weight_baby", "Age_of_baby_days_when_the_birth_assessments_were_done",
-  "Baby_BMI_at_birth_kg_per_m2", "Baby_birth_weight_kg", "Baby_head_circumference_at_birth_cm", "Baby_flank_skinfolds_thickness_at_birth",
-  "Baby_gestational_age_at_birth_weeks", "Baby_length_at_birth_cm", "Mother_pre_pregnancy_BMI_kg_per_m2", "Mother_height_cm", 
-  "Mother_weight_before_pregnancy_kg", "Mother_pregnancy_weight_gain_kg", "Mother_age_years", "Baby_ponderal_index_at_birth_kg_per_m3", 
-  "Baby_quadriceps_skinfolds_thickness_at_birth", "Did_the_mother_smoke_during_pregnancy", "Baby_subscapular_skinfolds_thickness_at_birth",
-  "Baby_triceps_skinfolds_thickness_at_birth", "Twin_pregnancy", "Parity", "Was_the_baby_born_small_for_gestational_age"
+DATA <- readRDS("data/imputed_data.rds")
+
+splits <- c(0.66, 0.70, 0.75, 0.80)
+
+train_ctrl <- trainControl(
+  method = "none",
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
 )
 
-# Remove the 'Dummy_Study_Number' column
-DATA <- subset(DATA, select = -c(Dummy_Study_Number))
+evaluate_model <- function(method, split_ratio) {
 
-# Check the modified column names
-colnames(DATA)
+  set.seed(123)
+  idx <- createDataPartition(DATA$Gestational_diabetes, p = split_ratio, list = FALSE)
+  train_data <- DATA[idx, ]
+  test_data  <- DATA[-idx, ]
 
-# Recode categorical variables
-# Assuming 'DATA' is your dataframe containing the variables mentioned
-DATA <- DATA %>%
-  mutate(
-    Evidence_of_maternal_anaemia = ifelse(Evidence_of_maternal_anaemia == "Yes", 1, 0),
-    Do_we_have_data_related_to_multiple_micronutrient_supplementation = ifelse(Do_we_have_data_related_to_multiple_micronutrient_supplementation == "Yes", 1, 0),
-    Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy = ifelse(Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy == "Yes", 1, 0),
-    Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else = ifelse(Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else == "Yes", 1, 0),
-    Gestational_diabetes = ifelse(Gestational_diabetes == "Yes", 1, 0),
-    Gestational_hypertension = ifelse(Gestational_hypertension == "Yes", 1, 0),
-    Evidence_of_pre_eclampsia = ifelse(Evidence_of_pre_eclampsia == "Yes", 1, 0),
-    Premature_birth = ifelse(Premature_birth == "Yes", 1, 0),
-    Low_birth_weight_baby = ifelse(Low_birth_weight_baby == "Yes", 1, 0),
-    Did_the_mother_smoke_during_pregnancy = ifelse(Did_the_mother_smoke_during_pregnancy == "Yes", 1, 0),
-    Twin_pregnancy = ifelse(Twin_pregnancy == "Yes", 1, 0),
-    Was_the_baby_born_small_for_gestational_age = ifelse(Was_the_baby_born_small_for_gestational_age == "Yes", 1, 0),
-    sex_of_the_baby = ifelse(sex_of_the_baby == "female", 1, 0)
+  # Balance training data ONLY
+  train_bal <- ROSE(Gestational_diabetes ~ ., data = train_data)$data
+
+  model_fit <- train(
+    Gestational_diabetes ~ .,
+    data = train_bal,
+    method = method,
+    metric = "ROC",
+    trControl = train_ctrl
   )
 
-# Assuming 'DATA' is your dataframe containing the variables
+  probs <- predict(model_fit, test_data, type = "prob")[,"Yes"]
+  roc_obj <- roc(test_data$Gestational_diabetes, probs)
 
-# Replace negative values in the specified columns with their absolute values
-cols_to_adjust <- c(
-  "Relative_to_the_start_of_pregnancy_when_did_multiple_micronutrient_supplementation_start",
-  "Mother_pregnancy_weight_gain_kg"
-)
-
-for (col in cols_to_adjust) {
-  DATA[[col]] <- abs(DATA[[col]])
+  return(list(AUC = auc(roc_obj), ROC = roc_obj))
 }
- 
-# Install and load the mice package
-install.packages("mice")
-library(mice)
 
-# Create a matrix of complete cases
-complete_cases <- na.omit(DATA)
-
-# Fit a linear regression model to each variable with missing values
-mice_model <- mice(DATA, m = 5, maxit = 50, meth = "pmm", seed = 500)
-
-# Impute missing values using the fitted models
-imputed_DATA <- complete(mice_model)
-
-# Analyze the imputed DATA
-summary(imputed_DATA)
-
-# Write the imputed dataset to an Excel file
-write_xlsx(imputed_DATA, path = "imputed_dataset.xlsx")
-
-# Uninstall the "dplyr" package if already installed
-
-# install the "dplyr" package
-install.packages("dplyr")
-
-#Load the "dplyr" package
-library(dplyr)
-
-#Load the "officer" package
-library(officer)
-
-#Load the "flextable" package
-library(flextable)
-
-# Assuming imputed_dataset is your dataframe
-summary_table <- imputed_dataset %>%
-  select(Relative_to_the_start_of_pregnancy_when_did_multiple_micronutrient_supplementation_start,
-         Relative_to_the_start_of_pregnancy_when_did_multiple_micronutrient_supplementation_stop,
-         For_how_many_weeks_were_multiple_micronutrients_taken,
-         Age_of_baby_days_when_the_birth_assessments_were_done,
-         Baby_BMI_at_birth_kg_per_m2,
-         Baby_birth_weight_kg,
-         Baby_head_circumference_at_birth_cm,
-         Baby_flank_skinfolds_thickness_at_birth,
-         Baby_gestational_age_at_birth_weeks,
-         Baby_length_at_birth_cm,
-         Mother_pre_pregnancy_BMI_kg_per_m2,
-         Mother_height_cm,
-         Mother_weight_before_pregnancy_kg,
-         Mother_pregnancy_weight_gain_kg,
-         Mother_age_years,
-         Baby_ponderal_index_at_birth_kg_per_m3,
-         Baby_quadriceps_skinfolds_thickness_at_birth,
-         Baby_subscapular_skinfolds_thickness_at_birth,
-         Baby_triceps_skinfolds_thickness_at_birth,
-         Parity)
-
-# Calculate summary statistics for each column separately
-mean_sd <- sapply(summary_table, function(x) paste0(round(mean(x), 2), " ± ", round(sd(x), 2)))
-median_val <- sapply(summary_table, median)
-min_val <- sapply(summary_table, min)
-max_val <- sapply(summary_table, max)
-
-# Create a dataframe with the desired structure
-formatted_summary <- data.frame(
-  Category = c('Relative_to_the_start_of_pregnancy_when_did_multiple_micronutrient_supplementation_start',
-               'Relative_to_the_start_of_pregnancy_when_did_multiple_micronutrient_supplementation_stop',
-               'For_how_many_weeks_were_multiple_micronutrients_taken',
-               'Age_of_baby_days_when_the_birth_assessments_were_done',
-               'Baby_BMI_at_birth_kg_per_m2',
-               'Baby_birth_weight_kg',
-               'Baby_head_circumference_at_birth_cm',
-               'Baby_flank_skinfolds_thickness_at_birth',
-               'Baby_gestational_age_at_birth_weeks',
-               'Baby_length_at_birth_cm',
-               'Mother_pre_pregnancy_BMI_kg_per_m2',
-               'Mother_height_cm',
-               'Mother_weight_before_pregnancy_kg',
-               'Mother_pregnancy_weight_gain_kg',
-               'Mother_age_years',
-               'Baby_ponderal_index_at_birth_kg_per_m3',
-               'Baby_quadriceps_skinfolds_thickness_at_birth',
-               'Baby_subscapular_skinfolds_thickness_at_birth',
-               'Baby_triceps_skinfolds_thickness_at_birth',
-               'Parity'),
-  
-  Mean_SD = mean_sd,
-  Median = median_val,
-  Min = min_val,
-  Max = max_val
+models <- c(
+  Logistic = "glmnet",
+  SVM = "svmRadial",
+  RandomForest = "rf",
+  NaiveBayes = "naive_bayes",
+  KNN = "knn",
+  XGBoost = "xgbTree"
 )
 
-# Create a flextable from the formatted dataframe
-summary_flextable <- flextable(formatted_summary)
+results <- list()
 
-# Apply formatting to the flextable
-summary_flextable <- set_table_properties(
-  summary_flextable,
-  width = 1, # Adjust table width as needed
-  layout = "autofit"
-) %>%
-  fontsize(size = 10) %>%
-  font(fontname = "Times New Roman")
+for (m in names(models)) {
+  for (s in splits) {
+    key <- paste(m, s, sep = "_")
+    results[[key]] <- evaluate_model(models[m], s)
+  }
+}
 
-# Save the table to a Word file
-doc <- read_docx() %>%
-  body_add_flextable(summary_flextable)
+saveRDS(results, "results/model_results.rds")
 
-print(doc, target = "summary_table1.docx")
+# ==============================================================================
+# Script: Results Summary and ROC Visualization
+# ==============================================================================
 
-
-# Assuming 'imputed_dataset' is your dataframe containing the variables
-# Transforming variables from binary to categorical
-imputed_dataset$Evidence_of_maternal_anaemia <- ifelse(imputed_dataset$Evidence_of_maternal_anaemia == 1, "Yes", "No")
-imputed_dataset$Do_we_have_data_related_to_multiple_micronutrient_supplementation <- "Yes" # All values are "Yes"
-imputed_dataset$Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy <- ifelse(imputed_dataset$Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy == 1, "Yes", "No")
-imputed_dataset$Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else <- ifelse(imputed_dataset$Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else == 1, "Yes", "No")
-imputed_dataset$Gestational_diabetes <- ifelse(imputed_dataset$Gestational_diabetes == 1, "Yes", "No")
-imputed_dataset$Gestational_hypertension <- ifelse(imputed_dataset$Gestational_hypertension == 1, "Yes", "No")
-imputed_dataset$Evidence_of_pre_eclampsia <- ifelse(imputed_dataset$Evidence_of_pre_eclampsia == 1, "Yes", "No")
-imputed_dataset$Premature_birth <- ifelse(imputed_dataset$Premature_birth == 1, "Yes", "No")
-imputed_dataset$Low_birth_weight_baby <- ifelse(imputed_dataset$Low_birth_weight_baby == 1, "Yes", "No")
-imputed_dataset$Did_the_mother_smoke_during_pregnancy <- ifelse(imputed_dataset$Did_the_mother_smoke_during_pregnancy == 1, "Yes", "No")
-imputed_dataset$Twin_pregnancy <- "No" # All values are "No"
-imputed_dataset$Was_the_baby_born_small_for_gestational_age <- ifelse(imputed_dataset$Was_the_baby_born_small_for_gestational_age == 1, "Yes", "No")
-imputed_dataset$sex_of_the_baby <- ifelse(imputed_dataset$sex_of_the_baby == 1, "female", "male")
-
-#Install the "tidyverse" package
-install.packages("tidyverse")
-
-#Load the "tidyverse" package
 library(tidyverse)
-
-#Install the "gtsummary" package
-install.packages("gtsummary")
-
-#Load the "gtsummry" package
-library(gtsummary)
-
-# Load the officer package
-library(officer)
-
-# Create a Word document
-output_file <- "frequency_percentage_tables.docx"
-doc <- read_docx()
-
-# Define categorical variables
-categorical_vars <- c(
-  "Evidence_of_maternal_anaemia", 
-  "Do_we_have_data_related_to_multiple_micronutrient_supplementation",
-  "Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy",
-  "Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else",
-  "Gestational_diabetes",
-  "Gestational_hypertension",
-  "Evidence_of_pre_eclampsia",
-  "Premature_birth",
-  "Low_birth_weight_baby",
-  "Did_the_mother_smoke_during_pregnancy",
-  "Twin_pregnancy",
-  "Was_the_baby_born_small_for_gestational_age",
-  "sex_of_the_baby"
-)
-
-# Loop through each categorical variable
-for (var in categorical_vars) {
-  # Create frequency table
-  freq_table <- as.data.frame(table(imputed_dataset[[var]]))
-  
-  # Create percentage column
-  freq_table$Percentage <- prop.table(table(imputed_dataset[[var]])) * 100
-  
-  # Rename columns
-  colnames(freq_table) <- c(var, "Frequency", "Percentage")
-  
-  # Add the table title to the Word document
-  doc <- doc %>%
-    body_add_par(paste("\nCombined Frequency and Percentage Table for", var, ":"))
-  
-  # Add the table to the Word document
-  doc <- doc %>%
-    body_add_table(as.data.frame(freq_table))
-}
-
-# Save the Word document
-print(output_file)
-print(doc, target = output_file)
-
-
-
-# Assuming 'imputed_dataset' is your dataframe containing the variables
-# Transforming variables from binary to categorical
-imputed_dataset$Evidence_of_maternal_anaemia <- ifelse(imputed_dataset$Evidence_of_maternal_anaemia == 1, "Yes", "No")
-imputed_dataset$Do_we_have_data_related_to_multiple_micronutrient_supplementation <- "Yes" # All values are "Yes"
-imputed_dataset$Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy <- ifelse(imputed_dataset$Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy == 1, "Yes", "No")
-imputed_dataset$Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else <- ifelse(imputed_dataset$Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else == 1, "Yes", "No")
-imputed_dataset$Gestational_diabetes <- ifelse(imputed_dataset$Gestational_diabetes == 1, "Yes", "No")
-imputed_dataset$Gestational_hypertension <- ifelse(imputed_dataset$Gestational_hypertension == 1, "Yes", "No")
-imputed_dataset$Evidence_of_pre_eclampsia <- ifelse(imputed_dataset$Evidence_of_pre_eclampsia == 1, "Yes", "No")
-imputed_dataset$Premature_birth <- ifelse(imputed_dataset$Premature_birth == 1, "Yes", "No")
-imputed_dataset$Low_birth_weight_baby <- ifelse(imputed_dataset$Low_birth_weight_baby == 1, "Yes", "No")
-imputed_dataset$Did_the_mother_smoke_during_pregnancy <- ifelse(imputed_dataset$Did_the_mother_smoke_during_pregnancy == 1, "Yes", "No")
-imputed_dataset$Twin_pregnancy <- "No" # All values are "No"
-imputed_dataset$Was_the_baby_born_small_for_gestational_age <- ifelse(imputed_dataset$Was_the_baby_born_small_for_gestational_age == 1, "Yes", "No")
-imputed_dataset$sex_of_the_baby <- ifelse(imputed_dataset$sex_of_the_baby == 1, "female", "male")
-
-
-# Create an empty list to store results
-results_list <- list()
-
-# List of categorical variables
-categorical_vars <- c(
-  "Evidence_of_maternal_anaemia",
-  "Do_we_have_data_related_to_multiple_micronutrient_supplementation",
-  "Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy",
-  "Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else",
-  "Gestational_hypertension",
-  "Evidence_of_pre_eclampsia",
-  "Premature_birth",
-  "Low_birth_weight_baby",
-  "Did_the_mother_smoke_during_pregnancy",
-  "Twin_pregnancy",
-  "Was_the_baby_born_small_for_gestational_age",
-  "sex_of_the_baby"
-)
-
-# Loop through each categorical variable
-for (var in categorical_vars) {
-  # Create contingency table for Gestational_diabetes and the current variable
-  contingency_table <- table(imputed_dataset$Gestational_diabetes, imputed_dataset[[var]])
-  
-  # Use suppressWarnings to prevent Chi-Square warnings
-  chi_square_result <- suppressWarnings(chisq.test(contingency_table))
-  
-  # Calculate expected counts for the cells
-  expected_counts <- chi_square_result$expected
-  
-  # Initialize variable to store the test used
-  test_used <- NULL
-  
-  # Check if more than 20% of the expected counts are less than 5
-  if(sum(expected_counts < 5) / length(expected_counts) > 0.2) {
-    # Perform Fisher's exact test
-    fisher_test_result <- fisher.test(contingency_table)
-    test_used <- "Fisher's Exact Test"
-  } else {
-    # Use the chi_square_result directly
-    test_used <- "Chi-Square Test"
-  }
-  
-  # Add row and column totals
-  contingency_table_with_totals <- addmargins(contingency_table)
-  
-  # Add p-value and test statistic to the contingency table
-  if (test_used == "Fisher's Exact Test") {
-    contingency_table_with_pvalue <- cbind(contingency_table_with_totals, 
-                                           "Test_Statistic" = test_used,
-                                           "p-value" = fisher_test_result$p.value)
-  } else {
-    contingency_table_with_pvalue <- cbind(contingency_table_with_totals, 
-                                           "Test_Statistic" = test_used,
-                                           "p-value" = chi_square_result$p.value)
-  }
-  
-  # Store the results
-  results_list[[var]] <- contingency_table_with_pvalue
-}
-
-# Print results
-for (var in names(results_list)) {
-  cat("Variable:", var, "\n")
-  print(results_list[[var]])
-  cat("\n")
-}
-
-# Load necessary libraries if not already loaded
-# Load necessary libraries if not already loaded
-if (!requireNamespace("officer", quietly = TRUE)) {
-  install.packages("officer")
-}
-if (!requireNamespace("flextable", quietly = TRUE)) {
-  install.packages("flextable")
-}
-library(officer)
-library(flextable)
-library(dplyr)
-
-# Assuming 'imputed_dataset' is your data frame
-
-# Calculate summary statistics by Gestational_diabetes for Relative_to_the_start_of_pregnancy_when_did_multiple_micronutrient_supplementation_start
-summary_stats <- imputed_dataset %>%
-  group_by(Gestational_diabetes) %>%
-  summarise(
-    Mean = mean(Relative_to_the_start_of_pregnancy_when_did_multiple_micronutrient_supplementation_start, na.rm = TRUE),
-    SD = sd(Relative_to_the_start_of_pregnancy_when_did_multiple_micronutrient_supplementation_start, na.rm = TRUE),
-    Median = median(Relative_to_the_start_of_pregnancy_when_did_multiple_micronutrient_supplementation_start, na.rm = TRUE),
-    Min = min(Relative_to_the_start_of_pregnancy_when_did_multiple_micronutrient_supplementation_start, na.rm = TRUE),
-    Max = max(Relative_to_the_start_of_pregnancy_when_did_multiple_micronutrient_supplementation_start, na.rm = TRUE)
-  ) %>%
-  mutate(Mean_SD = paste0(round(Mean, 2), " ± ", round(SD, 2)))
-
-# Create a final table with the p-value
-mann_whitney_test <- wilcox.test(Relative_to_the_start_of_pregnancy_when_did_multiple_micronutrient_supplementation_start ~ Gestational_diabetes, data = imputed_dataset)
-
-# Combine summary statistics and p-value into one data frame
-final_table <- summary_stats %>%
-  mutate(P_value = mann_whitney_test$p.value)
-
-# Display the table in the console (optional)
-flextable::flextable(final_table)
-
-# Convert final_table to a flextable object
-ft <- flextable(final_table)
-
-# Create a Word document
-doc <- read_docx() %>%
-  body_add_flextable(value = ft)
-
-# Save the Word document
-filename <- "Gestational_diabetes_Relative_to_the_start_of_pregnancy_when_did_multiple_micronutrient_supplementation_start.docx"
-print(doc, target = filename)
-
-# Load necessary libraries if not already loaded
-if (!requireNamespace("officer", quietly = TRUE)) {
-  install.packages("officer")
-}
-if (!requireNamespace("flextable", quietly = TRUE)) {
-  install.packages("flextable")
-}
-library(officer)
-library(flextable)
-library(dplyr)
-
-# Assuming 'imputed_dataset' is your data frame
-
-# List of quantitative variables
-quantitative_variables <- c('Relative_to_the_start_of_pregnancy_when_did_multiple_micronutrient_supplementation_start',
-                            'Relative_to_the_start_of_pregnancy_when_did_multiple_micronutrient_supplementation_stop',
-                            'For_how_many_weeks_were_multiple_micronutrients_taken',
-                            'Age_of_baby_days_when_the_birth_assessments_were_done',
-                            'Baby_BMI_at_birth_kg_per_m2',
-                            'Baby_birth_weight_kg',
-                            'Baby_head_circumference_at_birth_cm',
-                            'Baby_flank_skinfolds_thickness_at_birth',
-                            'Baby_gestational_age_at_birth_weeks',
-                            'Baby_length_at_birth_cm',
-                            'Mother_pre_pregnancy_BMI_kg_per_m2',
-                            'Mother_height_cm',
-                            'Mother_weight_before_pregnancy_kg',
-                            'Mother_pregnancy_weight_gain_kg',
-                            'Mother_age_years',
-                            'Baby_ponderal_index_at_birth_kg_per_m3',
-                            'Baby_quadriceps_skinfolds_thickness_at_birth',
-                            'Baby_subscapular_skinfolds_thickness_at_birth',
-                            'Baby_triceps_skinfolds_thickness_at_birth',
-                            'Parity')
-
-# Create an empty list to store summary statistics for each variable
-summary_stats_list <- list()
-
-# Loop through each quantitative variable and calculate summary statistics
-for (var in quantitative_variables) {
-  # Calculate summary statistics by Gestational_diabetes
-  summary_stats <- imputed_dataset %>%
-    group_by(Gestational_diabetes) %>%
-    summarise(
-      Mean = mean(!!sym(var), na.rm = TRUE),
-      SD = sd(!!sym(var), na.rm = TRUE),
-      Median = median(!!sym(var), na.rm = TRUE),
-      Min = min(!!sym(var), na.rm = TRUE),
-      Max = max(!!sym(var), na.rm = TRUE)
-    ) %>%
-    mutate(Mean_SD = paste0(round(Mean, 2), " ± ", round(SD, 2)),
-           Variable = var) # Add variable name as a column
-  
-  # Perform Mann-Whitney U test
-  mw_test <- wilcox.test(as.formula(paste(var, "~ Gestational_diabetes")), data = imputed_dataset)
-  
-  # Add p-value to summary statistics
-  summary_stats$p_value <- mw_test$p.value
-  
-  # Append summary statistics to the list
-  summary_stats_list[[var]] <- summary_stats
-}
-
-# Combine summary statistics for all variables into a single table
-final_table <- bind_rows(summary_stats_list)
-
-# Create a Word document
-filename <- "Summary_Statistics_All_Variables_with_P_Values.docx"
-doc <- read_docx() %>%
-  body_add_flextable(value = flextable(final_table))
-
-# Save the Word document
-print(doc, target = filename)
-
-# Remove the 'Do_we_have_data_related_to_multiple_micronutrient_supplementation' and 'Twin_pregnancy' columns
-imputed_dataset <- subset(imputed_dataset, select = -c(Do_we_have_data_related_to_multiple_micronutrient_supplementation, Twin_pregnancy))
-
-# Write the imputed dataset to an Excel file
-write_xlsx(imputed_dataset, path = "imputed_dataset1.xlsx")
-
-library(readxl)
-
-# Ensure categorical variables are treated as factors
-imputed_dataset1 <- imputed_dataset1 %>%
-  mutate(Gestational_diabetes = as.factor(Gestational_diabetes),
-         Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy = as.factor(Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy),
-         Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else = as.factor(Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else),
-         Evidence_of_pre_eclampsia = as.factor(Evidence_of_pre_eclampsia),
-         Gestational_hypertension = as.factor(Gestational_hypertension))
-
-# Check the balance of the target variable 'Gestational_diabetes'
-initial_balance <- table(imputed_dataset1$Gestational_diabetes)
-print("Initial balance of 'Gestational_diabetes':")
-print(initial_balance)
-
-# Install and load the ROSE package
-install.packages("ROSE")
-library(ROSE)
-
-# Apply ROSE to balance the dataset
-set.seed(123)  # For reproducibility
-imputed_dataset1_balanced <- ROSE(Gestational_diabetes ~ ., data = imputed_dataset1, seed = 123)$data
-
-# Ensure factors are retained after ROSE sampling
-imputed_dataset1_balanced <- imputed_dataset1_balanced %>%
-   mutate(Gestational_diabetes = as.factor(Gestational_diabetes),
-          Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy = as.factor(Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy),
-          Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else = as.factor(Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else),
-          Evidence_of_pre_eclampsia = as.factor(Evidence_of_pre_eclampsia),
-          Gestational_hypertension = as.factor(Gestational_hypertension))
-
-# Check the balance after ROSE
-balanced_balance <- table(imputed_dataset1_balanced$Gestational_diabetes)
-print("Balance of 'Gestational_diabetes' after applying ROSE:")
-print(balanced_balance)
-
-# Display the first few rows of the balanced dataset
-head_rows <- head(imputed_dataset1_balanced)
-print("First few rows of the balanced dataset:")
-print(head_rows)
-
-# Write the imputed dataset to an Excel file
-write_xlsx(imputed_dataset1_balanced, path = "imputed_dataset1_balanced1.xlsx")
-
-
-# Function to train SVM model, predict, and plot ROC curve
-
-# Load necessary libraries
-library(e1071)
-library(caret)
 library(pROC)
 library(ggplot2)
 
-# Load the dataset
-df <- read_excel("C:/Users/KAMALU IKECHUKWU/Desktop/NEAR EAST UNIVERSITY/R Assignment!/THESIS/THESIS (FINAL)/working/imputed_dataset1_balanced1.xlsx")
+results <- readRDS("results/model_results.rds")
 
-# Ensure categorical variables are factors
-df$Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy <- as.factor(df$Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy)
-df$Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else <- as.factor(df$Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else)
-df$Gestational_diabetes <- as.factor(df$Gestational_diabetes)
-df$Gestational_hypertension <- as.factor(df$Gestational_hypertension)
-df$Evidence_of_pre_eclampsia <- as.factor(df$Evidence_of_pre_eclampsia)
-
-# Function to train SVM model, predict, and plot ROC curve
-train_and_plot_roc <- function(train_fraction) {
-  # Split the data
-  set.seed(123)
-  trainIndex <- createDataPartition(df$Gestational_diabetes, p = train_fraction, list = FALSE)
-  trainData <- df[trainIndex, ]
-  testData <- df[-trainIndex, ]
-  
-  # Train the SVM model
-  svm_model <- svm(Gestational_diabetes ~ ., data = trainData, probability = TRUE)
-  
-  # Predict on the test set
-  svm_pred <- predict(svm_model, testData, probability = TRUE)
-  svm_prob <- attr(svm_pred, "probabilities")[,2]
-  
-  # Calculate ROC curve
-  roc_curve <- roc(testData$Gestational_diabetes, svm_prob)
-  
-  # Calculate AUC
-  auc_value <- auc(roc_curve)
-  
-  # Confusion matrix
-  predicted_classes <- ifelse(svm_prob > 0.5, 1, 0)
-  conf_matrix <- confusionMatrix(as.factor(predicted_classes), testData$Gestational_diabetes)
-  print(conf_matrix)
-  
-  # Plot ROC curve
-  ggplot(data = data.frame(tpr = roc_curve$sensitivities, fpr = 1 - roc_curve$specificities), aes(x = fpr, y = tpr)) +
-    geom_line(color = "black") +
-    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
-    labs(title = paste0("ROC Curve for SVM Model (", train_fraction*100, "% Train)"), x = "False Positive Rate", y = "True Positive Rate") +
-    theme_minimal()
-  
-  return(list(roc_curve = roc_curve, auc_value = auc_value))
-}
-
-# Train and plot ROC curves for different train-test splits
-roc_66 <- train_and_plot_roc(0.66)
-roc_70 <- train_and_plot_roc(0.70)
-roc_75 <- train_and_plot_roc(0.75)
-roc_80 <- train_and_plot_roc(0.80)
-
-# Print AUC values
-cat("AUC for 66% Train: ", roc_66$auc_value, "\n")
-cat("AUC for 70% Train: ", roc_70$auc_value, "\n")
-cat("AUC for 75% Train: ", roc_75$auc_value, "\n")
-cat("AUC for 80% Train: ", roc_80$auc_value, "\n")
-
-# Combine all ROC curves 
-all_roc_data <- rbind(
-  data.frame(FPR = 1 - roc_66$roc_curve$specificities, TPR = roc_66$roc_curve$sensitivities, Model = "66% Train"),
-  data.frame(FPR = 1 - roc_70$roc_curve$specificities, TPR = roc_70$roc_curve$sensitivities, Model = "70% Train"),
-  data.frame(FPR = 1 - roc_75$roc_curve$specificities, TPR = roc_75$roc_curve$sensitivities, Model = "75% Train"),
-  data.frame(FPR = 1 - roc_80$roc_curve$specificities, TPR = roc_80$roc_curve$sensitivities, Model = "80% Train")
+auc_table <- tibble(
+  Model_Split = names(results),
+  AUC = sapply(results, function(x) as.numeric(x$AUC))
 )
 
-# Plot combined ROC curves 
-ggplot(all_roc_data, aes(x = FPR, y = TPR, color = Model)) +
-  geom_line() +
-  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
-  labs(title = "Combined ROC Curves for SVM Model", x = "False Positive Rate", y = "True Positive Rate") +
+write.csv(auc_table, "results/auc_results.csv", row.names = FALSE)
+
+roc_df <- bind_rows(lapply(names(results), function(k) {
+  r <- results[[k]]$ROC
+  data.frame(
+    FPR = 1 - r$specificities,
+    TPR = r$sensitivities,
+    Model = k
+  )
+}))
+
+p <- ggplot(roc_df, aes(FPR, TPR, color = Model)) +
+  geom_line(size = 1) +
+  geom_abline(linetype = "dashed") +
   theme_minimal() +
-  theme(legend.position = "right")
+  labs(title = "ROC Curves Across Models and Data Splits")
 
+ggsave("results/roc_curves.png", plot = p, width = 10, height = 7)
 
-# Function to train Naive Bayes model, predict, and plot ROC curve
-
-# Load necessary libraries
-library(e1071)
-library(caret)
-library(pROC)
-library(ggplot2)
-
-# Load the dataset
-df <- read_excel("C:/Users/KAMALU IKECHUKWU/Desktop/NEAR EAST UNIVERSITY/R Assignment!/THESIS/THESIS (FINAL)/working/imputed_dataset1_balanced1.xlsx")
-
-# Ensure categorical variables are factors
-df$Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy <- as.factor(df$Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy)
-df$Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else <- as.factor(df$Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else)
-df$Gestational_diabetes <- as.factor(df$Gestational_diabetes)
-df$Gestational_hypertension <- as.factor(df$Gestational_hypertension)
-df$Evidence_of_pre_eclampsia <- as.factor(df$Evidence_of_pre_eclampsia)
-
-# Function to train Naive Bayes model, predict, and plot ROC curve
-train_and_plot_roc <- function(train_fraction) {
-  # Split the data
-  set.seed(123)
-  trainIndex <- createDataPartition(df$Gestational_diabetes, p = train_fraction, list = FALSE)
-  trainData <- df[trainIndex, ]
-  testData <- df[-trainIndex, ]
-  
-  # Train the Naive Bayes model
-  nb_model <- naiveBayes(Gestational_diabetes ~ ., data = trainData)
-  
-  # Predict on the test set
-  nb_pred <- predict(nb_model, testData, type = "raw")
-  nb_prob <- nb_pred[,2]
-  
-  # Calculate ROC curve
-  roc_curve <- roc(testData$Gestational_diabetes, nb_prob)
-  
-  # Calculate AUC
-  auc_value <- auc(roc_curve)
-  
-  # Confusion matrix
-  predicted_classes <- ifelse(nb_prob > 0.5, 1, 0)
-  conf_matrix <- confusionMatrix(as.factor(predicted_classes), testData$Gestational_diabetes)
-  print(conf_matrix)
-  
-  # Plot ROC curve
-  ggplot(data = data.frame(tpr = roc_curve$sensitivities, fpr = 1 - roc_curve$specificities), aes(x = fpr, y = tpr)) +
-    geom_line(color = "black") +
-    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
-    labs(title = paste0("ROC Curve for Naive Bayes Model (", train_fraction*100, "% Train)"), x = "False Positive Rate", y = "True Positive Rate") +
-    theme_minimal()
-  
-  return(list(roc_curve = roc_curve, auc_value = auc_value))
-}
-
-# Train and plot ROC curves for different train-test splits
-roc_66 <- train_and_plot_roc(0.66)
-roc_70 <- train_and_plot_roc(0.70)
-roc_75 <- train_and_plot_roc(0.75)
-roc_80 <- train_and_plot_roc(0.80)
-
-# Print AUC values
-cat("AUC for 66% Train: ", roc_66$auc_value, "\n")
-cat("AUC for 70% Train: ", roc_70$auc_value, "\n")
-cat("AUC for 75% Train: ", roc_75$auc_value, "\n")
-cat("AUC for 80% Train: ", roc_80$auc_value, "\n")
-
-# Combine all ROC curves (optional)
-all_roc_data <- rbind(
-  data.frame(FPR = 1 - roc_66$roc_curve$specificities, TPR = roc_66$roc_curve$sensitivities, Model = "66% Train"),
-  data.frame(FPR = 1 - roc_70$roc_curve$specificities, TPR = roc_70$roc_curve$sensitivities, Model = "70% Train"),
-  data.frame(FPR = 1 - roc_75$roc_curve$specificities, TPR = roc_75$roc_curve$sensitivities, Model = "75% Train"),
-  data.frame(FPR = 1 - roc_80$roc_curve$specificities, TPR = roc_80$roc_curve$sensitivities, Model = "80% Train")
-)
-
-# Plot combined ROC curves (optional)
-ggplot(all_roc_data, aes(x = FPR, y = TPR, color = Model)) +
-  geom_line() +
-  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
-  labs(title = "Combined ROC Curves for Naive Bayes Model", x = "False Positive Rate", y = "True Positive Rate") +
-  theme_minimal() +
-  theme(legend.position = "right")
-
-
-# Function to train KNN model, predict, and plot ROC curve 
-# Load necessary libraries
-library(class)
-library(caret)
-library(pROC)
-library(ggplot2)
-
-# Load the dataset
-df <- read_excel("C:/Users/KAMALU IKECHUKWU/Desktop/NEAR EAST UNIVERSITY/R Assignment!/THESIS/THESIS (FINAL)/working/imputed_dataset1_balanced1.xlsx")
-
-# Ensure categorical variables are factors
-df$Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy <- as.factor(df$Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy)
-df$Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else <- as.factor(df$Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else)
-df$Gestational_diabetes <- as.factor(df$Gestational_diabetes)
-df$Gestational_hypertension <- as.factor(df$Gestational_hypertension)
-df$Evidence_of_pre_eclampsia <- as.factor(df$Evidence_of_pre_eclampsia)
-
-# Function to train KNN model, predict, and plot ROC curve
-train_and_plot_roc <- function(train_fraction) {
-  # Split the data
-  set.seed(123)
-  trainIndex <- createDataPartition(df$Gestational_diabetes, p = train_fraction, list = FALSE)
-  trainData <- df[trainIndex, ]
-  testData <- df[-trainIndex, ]
-  
-  # Define predictor variables and target variable
-  predictors <- c("For_how_many_weeks_were_multiple_micronutrients_taken", 
-                  "Mother_pre_pregnancy_BMI_kg_per_m2", 
-                  "Mother_weight_before_pregnancy_kg", 
-                  "Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy", 
-                  "Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else", 
-                  "Gestational_hypertension", 
-                  "Evidence_of_pre_eclampsia")
-  
-  # Train KNN model
-  knn_pred <- knn(train = trainData[, predictors], 
-                  test = testData[, predictors], 
-                  cl = trainData$Gestational_diabetes, 
-                  k = 5)
-  
-  # Convert predictions to numeric for ROC curve
-  knn_pred_numeric <- as.numeric(knn_pred) - 1
-  test_actual_numeric <- as.numeric(testData$Gestational_diabetes) - 1
-  
-  # Calculate ROC curve
-  roc_curve <- roc(test_actual_numeric, knn_pred_numeric)
-  
-  # Calculate AUC
-  auc_value <- auc(roc_curve)
-  
-  # Confusion matrix
-  conf_matrix <- confusionMatrix(as.factor(knn_pred), as.factor(testData$Gestational_diabetes))
-  print(conf_matrix)
-  
-  # Plot ROC curve
-  ggplot(data = data.frame(tpr = roc_curve$sensitivities, fpr = 1 - roc_curve$specificities), aes(x = fpr, y = tpr)) +
-    geom_line(color = "black") +
-    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
-    labs(title = paste0("ROC Curve for KNN Model (", train_fraction*100, "% Train)"), x = "False Positive Rate", y = "True Positive Rate") +
-    theme_minimal()
-  
-  return(list(roc_curve = roc_curve, auc_value = auc_value))
-}
-
-# Train and plot ROC curves for different train-test splits
-roc_66 <- train_and_plot_roc(0.66)
-roc_70 <- train_and_plot_roc(0.70)
-roc_75 <- train_and_plot_roc(0.75)
-roc_80 <- train_and_plot_roc(0.80)
-
-# Print AUC values
-cat("AUC for 66% Train: ", roc_66$auc_value, "\n")
-cat("AUC for 70% Train: ", roc_70$auc_value, "\n")
-cat("AUC for 75% Train: ", roc_75$auc_value, "\n")
-cat("AUC for 80% Train: ", roc_80$auc_value, "\n")
-
-# Combine all ROC curves (optional)
-all_roc_data <- rbind(
-  data.frame(FPR = 1 - roc_66$roc_curve$specificities, TPR = roc_66$roc_curve$sensitivities, Model = "66% Train"),
-  data.frame(FPR = 1 - roc_70$roc_curve$specificities, TPR = roc_70$roc_curve$sensitivities, Model = "70% Train"),
-  data.frame(FPR = 1 - roc_75$roc_curve$specificities, TPR = roc_75$roc_curve$sensitivities, Model = "75% Train"),
-  data.frame(FPR = 1 - roc_80$roc_curve$specificities, TPR = roc_80$roc_curve$sensitivities, Model = "80% Train")
-)
-
-# Plot combined ROC curves (optional)
-ggplot(all_roc_data, aes(x = FPR, y = TPR, color = Model)) +
-  geom_line() +
-  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
-  labs(title = "Combined ROC Curves for KNN Model", x = "False Positive Rate", y = "True Positive Rate") +
-  theme_minimal() +
-  theme(legend.position = "right")
-
-
-# Function to train XGBoost model, predict, and plot ROC curve
-
-# Load necessary libraries
-library(xgboost)
-library(caret)
-library(pROC)
-library(ggplot2)
-library(gridExtra)
-
-# Load the dataset
-df <- imputed_dataset1_balanced1
-
-# Convert categorical variables to factors
-df$Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy <- as.factor(df$Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy)
-df$Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else <- as.factor(df$Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else)
-df$Gestational_diabetes <- as.factor(df$Gestational_diabetes)
-df$Gestational_hypertension <- as.factor(df$Gestational_hypertension)
-df$Evidence_of_pre_eclampsia <- as.factor(df$Evidence_of_pre_eclampsia)
-
-# Define predictor variables and target variable
-predictors <- c("For_how_many_weeks_were_multiple_micronutrients_taken", 
-                "Mother_pre_pregnancy_BMI_kg_per_m2", 
-                "Mother_weight_before_pregnancy_kg", 
-                "Did_the_mother_supplement_with_multiple_micronutrients_during_pregnancy", 
-                "Did_the_mothers_just_supplement_with_multiple_micronutrients_during_pregnancy_and_nothing_else", 
-                "Gestational_hypertension", 
-                "Evidence_of_pre_eclampsia")
-
-# Number of splits
-splits <- c(0.66, 0.70, 0.75, 0.80)
-split_labels <- c("66% Train", "70% Train", "75% Train", "80% Train")
-roc_curves <- list()
-aucs <- numeric(length(splits))
-conf_matrices <- list()
-
-# Loop over different train-test splits
-for (i in 1:length(splits)) {
-  split_ratio <- splits[i]
-  
-  # Split the data into training and testing sets
-# Set seed for reproducibility
-set.seed(123)
-  trainIndex <- createDataPartition(df$Gestational_diabetes, p = split_ratio, list = FALSE)
-  trainData <- df[trainIndex, ]
-  testData <- df[-trainIndex, ]
-  
-  # Convert data to matrix format for xgboost
-  train_matrix <- model.matrix(~ . - 1, data = trainData[, predictors])
-  test_matrix <- model.matrix(~ . - 1, data = testData[, predictors])
-  train_label <- as.numeric(trainData$Gestational_diabetes) - 1
-  test_label <- as.numeric(testData$Gestational_diabetes) - 1
-  
-  # Train xgboost model
-  xgb_model <- xgboost(data = train_matrix, label = train_label, 
-                       objective = "binary:logistic", nrounds = 100, verbose = 0)
-  
-  # Predict on test data
-  xgb_pred <- predict(xgb_model, test_matrix)
-  xgb_pred_class <- ifelse(xgb_pred > 0.5, 1, 0)
-  
-  # Calculate ROC curve
-  roc_curve <- roc(test_label, xgb_pred)
-  roc_curves[[i]] <- roc_curve
-  aucs[i] <- auc(roc_curve)
-  
-  # Store confusion matrix
-  conf_matrices[[i]] <- confusionMatrix(factor(xgb_pred_class), factor(test_label))
-}
-
-# Prepare data for ROC plot with legends
-roc_data_list <- list()
-for (i in 1:length(roc_curves)) {
-  roc_data <- data.frame(tpr = roc_curves[[i]]$sensitivities, fpr = 1 - roc_curves[[i]]$specificities)
-  roc_data$Model <- as.factor(split_labels[i])
-  roc_data_list[[i]] <- roc_data
-}
-
-roc_data_combined <- do.call(rbind, roc_data_list)
-
-# Plot combined ROC curves
-roc_plot <- ggplot(data = roc_data_combined, aes(x = fpr, y = tpr, color = Model)) +
-  geom_line() +
-  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
-  labs(title = "Combined ROC Curves for XGBoost Model", x = "False Positive Rate", y = "True Positive Rate") +
-  theme_minimal()
-
-print(roc_plot)
-
-# Print AUCs with corresponding splits
-auc_results <- data.frame(Model = split_labels, AUC = aucs)
-print("AUC values for each model:")
-print(auc_results)
-
-# Print confusion matrices for each split
-for (i in 1:length(conf_matrices)) {
-  print(paste("Confusion Matrix for", split_labels[i], ":"))
-  print(conf_matrices[[i]])
-}
-
+sessionInfo()
 
