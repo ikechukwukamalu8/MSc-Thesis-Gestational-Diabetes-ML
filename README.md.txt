@@ -35,7 +35,7 @@ MSc-Thesis-Gestational-Diabetes-ML/
   - Naïve Bayes
   - K-Nearest Neighbors
   - XGBoost
-- Evaluation Metric: ROC–AUC
+- Evaluation Metric: Accuracy, Recall, precision, F1 Score, and ROC–AUC
 - Data Splits: 66/34, 70/30, 75/25, 80/20
 
 ## Key Contributions
@@ -48,4 +48,5 @@ MSc-Thesis-Gestational-Diabetes-ML/
 **Ikechukwu Okechi Kamalu**  
 MSc Biostatistics  
 ORCID: 0009-0008-3922-6310
+
 
