@@ -27,5 +27,5 @@ for gestational diabetes prediction.
 ## Author
 **Ikechukwu Okechi Kamalu**  
 MSc Biostatistics  
-ORCID: 0009-0008-3922-6310
+ORCID: [0009-0008-3922-6310]([url](https://orcid.org/0009-0008-3922-6310))
 
