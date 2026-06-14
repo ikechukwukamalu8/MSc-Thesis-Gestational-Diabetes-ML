@@ -1,8 +1,6 @@
 ﻿# MSc Thesis: Impact of Data Splitting on Machine Learning Performance
 
-This repository contains the complete reproducible code for my MSc thesis in
-Biostatistics (Distinction), investigating how different train–test split ratios
-affect the performance, robustness, and generalization of machine learning models
+This repository contains the complete reproducible code for my MSc thesis in Biostatistics (High honor; CGPA: 4.00/4.00), investigating how different train–test split ratios affect the performance, robustness, and generalization of machine learning models
 for gestational diabetes prediction.
 
 ## Methods
